@@ -10,12 +10,23 @@
 
 MFRC522 mfrc522(SS_PIN, RST_PIN); // Create MFRC522 instance
 
+// Define the structure to hold the key pair
+struct EccKeyPair {
+    uint8_t publicKey[64];
+    uint8_t privateKey[32];
+    bool success; // Flag to indicate if generation succeeded
+  };
+
 const int lcdColumns = 16;
 const int lcdRows = 2;
 LiquidCrystal_I2C lcd(0x27, lcdColumns, lcdRows);
-void setLCDMessageCentered(String message, int row);
-void generateKeys();
 
+// Function Prototypes
+void setLCDMessageCentered(String message, int row);
+EccKeyPair generateKeys();
+int customRNG(uint8_t *dest, unsigned size); // Added prototype for customRNG
+
+// RNG Function Implementation
 int customRNG(uint8_t *dest, unsigned size) {
     // Use Arduino's random() function
     // Make sure to seed the PRNG properly in setup() if using this.
@@ -29,7 +40,11 @@ int customRNG(uint8_t *dest, unsigned size) {
 void setup()
 {
   Serial.begin(115200); // Initialize serial communications with the PC
-  // while (!Serial);  // Do nothing if no serial port is opened (added for Arduinos based on ATMEGA32U4)
+
+  // --- Seed the PRNG (IMPORTANT if using Arduino's random() in customRNG) ---
+  // Use an unconnected analog pin for somewhat unpredictable seed.
+  randomSeed(analogRead(A0)); // Use an unused analog pin (e.g., A0)
+
   lcd.init();
   lcd.backlight();
   setLCDMessageCentered("Starting up...", 0);
@@ -40,9 +55,50 @@ void setup()
   Serial.println(F("Scan PICC to see UID, SAK, type, and data blocks..."));
   setLCDMessageCentered("Ready to scan", 0);
   delay(1000);
+
+  // --- Set the RNG function for uECC ---
   uECC_set_rng(&customRNG);
-  generateKeys(); // Generate and display a new key pair
-}
+
+  // --- Call generateKeys and store the returned struct ---
+  // FIX 1: Corrected function call and assignment syntax
+  EccKeyPair returnedKeys = generateKeys();
+
+  Serial.println("\n--- Checking keys returned to setup() ---"); // Added separator
+
+  // Check the success flag from the returned struct
+  if (returnedKeys.success) {
+    Serial.println("Key generation reported SUCCESS.");
+
+    // Now, print the keys by accessing the arrays within the returned struct
+
+    // Print the RETURNED Private Key
+    Serial.println("Returned Private Key (accessed via struct):");
+    for (size_t i = 0; i < sizeof(returnedKeys.privateKey); ++i) {
+      if (returnedKeys.privateKey[i] < 16) {
+        Serial.print("0"); // Add leading zero if needed
+      }
+      Serial.print(returnedKeys.privateKey[i], HEX);
+    }
+    Serial.println(); // Newline after the key
+
+    // Print the RETURNED Public Key
+    Serial.println("Returned Public Key (accessed via struct):");
+    for (size_t i = 0; i < sizeof(returnedKeys.publicKey); ++i) {
+      if (returnedKeys.publicKey[i] < 16) {
+        Serial.print("0"); // Add leading zero if needed
+      }
+      Serial.print(returnedKeys.publicKey[i], HEX);
+    }
+    Serial.println(); // Newline after the key
+  }
+  else // Added else block for clarity
+  {
+      Serial.println("Key generation reported FAILURE.");
+      // Consider adding error handling here - maybe halt execution?
+      // while(1);
+  }
+   Serial.println("--- End of key check in setup() ---"); // Added separator
+} // End of setup() function - Ensure this brace is present
 
 void loop()
 {
@@ -62,79 +118,51 @@ void loop()
   mfrc522.PICC_DumpToSerial(&(mfrc522.uid));
 }
 
-void generateKeys()
+EccKeyPair generateKeys()
 {
-  uint8_t privateKey[32];
-  uint8_t publicKey[64];
+  // NOTE: RNG must be set via uECC_set_rng() before calling this function.
+
+  EccKeyPair generatedKeys; // Create an instance of the struct to return
+  generatedKeys.success = false; // Assume failure initially
 
   const struct uECC_Curve_t *curve = uECC_secp256r1();
 
-  if (!uECC_make_key(publicKey, privateKey, curve))
+  // Attempt to generate the keys directly into the struct's arrays
+  if (!uECC_make_key(generatedKeys.publicKey, generatedKeys.privateKey, curve))
   {
+    // Key generation failed
     Serial.println("Key generation failed!");
-    return;
+    // generatedKeys.success remains false
+  }
+  else
+  {
+    // Key generation successful
+    // FIX 2: Added missing semicolon
+    generatedKeys.success = true;
+    // Optional: Add Serial prints here if you want generation messages too
+    Serial.println("Key generation successful (within generateKeys).");
   }
 
-  Serial.println("Private Key:");
-  for (size_t i = 0; i < sizeof(privateKey); ++i)
-  {
-    if (privateKey[i] < 16)
-      Serial.print("0");
-    Serial.print(privateKey[i], HEX);
-  }
-  Serial.println();
-
-  Serial.println("Public Key:");
-  for (size_t i = 0; i < sizeof(publicKey); ++i)
-  {
-    if (publicKey[i] < 16)
-      Serial.print("0");
-    Serial.print(publicKey[i], HEX);
-  }
-  Serial.println();
+  // FIX 3: Moved return statement outside the if/else block
+  return generatedKeys; // Return the struct containing keys and success status
 }
 
+// Implementation of setLCDMessageCentered (seems okay, unchanged)
 void setLCDMessageCentered(String message, int row)
 {
-  // 1. Validate the target row number
-  if (row < 0 || row >= lcdRows)
-  {
-    // Invalid row, optionally print an error to Serial monitor if available
-    // Serial.print("Error: Invalid LCD row "); Serial.println(row);
-    return; // Exit the function if the row is invalid
-  }
-
-  // 2. Prepare the message content
+  if (row < 0 || row >= lcdRows) { return; }
   int messageLen = message.length();
-  String messageToDisplay = message; // Use a copy to potentially modify
-
-  // Truncate the message if it's longer than the LCD width
-  if (messageLen > lcdColumns)
-  {
+  String messageToDisplay = message;
+  if (messageLen > lcdColumns) {
     messageToDisplay = messageToDisplay.substring(0, lcdColumns);
-    messageLen = lcdColumns; // Update the length after truncation
+    messageLen = lcdColumns;
   }
-
-  // 3. Calculate the necessary padding for centering
   int totalEmptySpace = lcdColumns - messageLen;
-  int leftPadding = totalEmptySpace / 2; // Integer division handles the floor
-
-  // 4. Build the final string with padding
+  int leftPadding = totalEmptySpace / 2;
   String outputString = "";
-  // Add spaces for left padding
-  for (int i = 0; i < leftPadding; i++)
-  {
-    outputString += " ";
-  }
-  // Add the actual message (which might have been truncated)
+  for (int i = 0; i < leftPadding; i++) { outputString += " "; }
   outputString += messageToDisplay;
-  // Add spaces for right padding to fill the remaining columns
-  while (outputString.length() < lcdColumns)
-  {
-    outputString += " ";
-  }
-
-  // 5. Display the centered message on the LCD
-  lcd.setCursor(0, row);   // Move cursor to the start of the specified row
-  lcd.print(outputString); // Print the fully padded and centered string
+  while (outputString.length() < lcdColumns) { outputString += " "; }
+  lcd.setCursor(0, row);
+  lcd.print(outputString);
 }
