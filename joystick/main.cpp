@@ -19,7 +19,7 @@ unsigned long lastButtonDebounceTime = 0;
 bool buttonClicked = false;
 
 void setup() {
-  Serial.begin(9600); // Start serial communication
+  Serial.begin(115200); // Start serial communication
   pinMode(xPin, INPUT);
   pinMode(yPin, INPUT);
   pinMode(buttonPin, INPUT_PULLUP); // Button uses internal pull-up resistor
