@@ -14,6 +14,17 @@ const int lcdColumns = 16;
 const int lcdRows = 2;
 LiquidCrystal_I2C lcd(0x27, lcdColumns, lcdRows);
 void setLCDMessageCentered(String message, int row);
+void generateKeys();
+
+int customRNG(uint8_t *dest, unsigned size) {
+    // Use Arduino's random() function
+    // Make sure to seed the PRNG properly in setup() if using this.
+    for (unsigned i = 0; i < size; ++i) {
+      dest[i] = random(0, 256); // Generate a random byte
+    }
+    // A real implementation should check for errors and return 0 on failure
+    return 1; // Return 1 to indicate success
+  }
 
 void setup()
 {
@@ -28,6 +39,9 @@ void setup()
   mfrc522.PCD_DumpVersionToSerial(); // Show details of PCD - MFRC522 Card Reader details
   Serial.println(F("Scan PICC to see UID, SAK, type, and data blocks..."));
   setLCDMessageCentered("Ready to scan", 0);
+  delay(1000);
+  uECC_set_rng(&customRNG);
+  generateKeys(); // Generate and display a new key pair
 }
 
 void loop()
