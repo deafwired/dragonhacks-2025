@@ -3,7 +3,7 @@
 #include <SPI.h>
 #include <MFRC522.h>
 #include <uECC.h>
-#include <String.h>
+// #include <String.h>
 
 #define RST_PIN 5 // Configurable, see typical pin layout above
 #define SS_PIN 53 // Configurable, see typical pin layout above
@@ -48,7 +48,7 @@ void loop()
   mfrc522.PICC_DumpToSerial(&(mfrc522.uid));
 }
 
-uint8_t[] generateKeys()
+void generateKeys()
 {
   uint8_t privateKey[32];
   uint8_t publicKey[64];
@@ -78,7 +78,6 @@ uint8_t[] generateKeys()
     Serial.print(publicKey[i], HEX);
   }
   Serial.println();
-  return [ privateKey, publicKey ];
 }
 
 void setLCDMessageCentered(String message, int row)
