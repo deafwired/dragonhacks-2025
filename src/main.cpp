@@ -1,12 +1,20 @@
 #include <Arduino.h>
-// #include <LiquidCrystal_I2C.h>
+#include <LiquidCrystal_I2C.h>
 #include <SPI.h>
 #include <MFRC522.h>
+#include <String.h>
 
-#define RST_PIN 9 // Configurable, see typical pin layout above
-#define SS_PIN 10 // Configurable, see typical pin layout above
+#define RST_PIN 5 // Configurable, see typical pin layout above
+#define SS_PIN 53 // Configurable, see typical pin layout above
 
 MFRC522 mfrc522(SS_PIN, RST_PIN); // Create MFRC522 instance
+
+
+const int lcdColumns = 16;
+const int lcdRows = 2;
+LiquidCrystal_I2C lcd(0x27, lcdColumns, lcdRows);
+void setLCDMessageCentered(String message, int row);
+
 
 void setup()
 {
@@ -15,6 +23,9 @@ void setup()
         ;                              // Do nothing if no serial port is opened (added for Arduinos based on ATMEGA32U4)
     SPI.begin();                       // Init SPI bus
     mfrc522.PCD_Init();                // Init MFRC522
+    lcd.init();
+    lcd.backlight();
+    setLCDMessageCentered("Google VibeCode Studio", 0);
     delay(4);                          // Optional delay. Some board do need more time after init to be ready, see Readme
     mfrc522.PCD_DumpVersionToSerial(); // Show details of PCD - MFRC522 Card Reader details
     Serial.println(F("Scan PICC to see UID, SAK, type, and data blocks..."));
@@ -36,4 +47,44 @@ void loop()
 
     // Dump debug info about the card; PICC_HaltA() is automatically called
     mfrc522.PICC_DumpToSerial(&(mfrc522.uid));
+}
+
+void setLCDMessageCentered(String message, int row) {
+  // 1. Validate the target row number
+  if (row < 0 || row >= lcdRows) {
+    // Invalid row, optionally print an error to Serial monitor if available
+    // Serial.print("Error: Invalid LCD row "); Serial.println(row);
+    return; // Exit the function if the row is invalid
+  }
+
+  // 2. Prepare the message content
+  int messageLen = message.length();
+  String messageToDisplay = message; // Use a copy to potentially modify
+
+  // Truncate the message if it's longer than the LCD width
+  if (messageLen > lcdColumns) {
+    messageToDisplay = messageToDisplay.substring(0, lcdColumns);
+    messageLen = lcdColumns; // Update the length after truncation
+  }
+
+  // 3. Calculate the necessary padding for centering
+  int totalEmptySpace = lcdColumns - messageLen;
+  int leftPadding = totalEmptySpace / 2; // Integer division handles the floor
+
+  // 4. Build the final string with padding
+  String outputString = "";
+  // Add spaces for left padding
+  for (int i = 0; i < leftPadding; i++) {
+    outputString += " ";
+  }
+  // Add the actual message (which might have been truncated)
+  outputString += messageToDisplay;
+  // Add spaces for right padding to fill the remaining columns
+  while (outputString.length() < lcdColumns) {
+    outputString += " ";
+  }
+
+  // 5. Display the centered message on the LCD
+  lcd.setCursor(0, row); // Move cursor to the start of the specified row
+  lcd.print(outputString); // Print the fully padded and centered string
 }
