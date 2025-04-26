@@ -1,0 +1,2 @@
+- [ ] use gemini api
+- [ ] use express.js (node.js) + mongodb
