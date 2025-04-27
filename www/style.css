@@ -1,0 +1,16 @@
+.header {
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    transform: translateY(50%);
+}
+
+
+.form-input {
+    padding: 5px;
+}
+
+
+button {
+    margin: 5px;
+}
