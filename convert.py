@@ -1,11 +1,11 @@
 import serial
 import pynput
 
-MACOS = "cu.usbmodem2101"
+MACOS = "/dev/cu.usbmodem2101"
 baudrate = 115200
 
-ser = serial.serial(MACOS, baudrate)
-keyboard = Controller()
+ser = serial.Serial(MACOS, baudrate)
+keyboard = pynput.keyboard.Controller()
 
 while True:
     data = ser.redaline().decode('utf-8').strip()
