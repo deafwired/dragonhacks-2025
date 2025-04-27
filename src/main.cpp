@@ -2,6 +2,7 @@
 #include <LiquidCrystal_I2C.h>
 #include <SPI.h>
 #include <MFRC522.h>
+#include <stdint.h> // Required for uint16_t
 
 #define RST_PIN 5 // Configurable, adjust to your setup
 #define SS_PIN 53 // Configurable, adjust to your setup
@@ -23,7 +24,16 @@ const byte userDataBlocks[] = {
     48, 49, 50,     52, 53, 54,     56, 57, 58,     60, 61, 62      // Sectors 12-15
 };
 const int NUM_USER_DATA_BLOCKS = sizeof(userDataBlocks) / sizeof(userDataBlocks[0]); // Should be 47
-const int MAX_USER_DATA_SIZE = NUM_USER_DATA_BLOCKS * BLOCK_SIZE; // Should be 752 bytes
+const int TOTAL_USER_AREA_SIZE = NUM_USER_DATA_BLOCKS * BLOCK_SIZE; // Should be 752 bytes
+
+// --- Header Configuration ---
+const byte HEADER_SIZE = 3; // 1 byte type + 2 bytes length
+const int MAX_PAYLOAD_SIZE = TOTAL_USER_AREA_SIZE - HEADER_SIZE; // Max actual data size = 749 bytes
+
+// --- Data Type Codes ---
+const byte DATA_TYPE_NONE = 0x00;
+const byte DATA_TYPE_PASSWORD = 0x01;
+// Add more types here as needed (e.g., DATA_TYPE_NOTE = 0x02;)
 
 // Define a default key (Key A) - Many cards use FFFFFFFFFFFFh as the default key A
 MFRC522::MIFARE_Key key;
@@ -36,9 +46,10 @@ void setLCDMessageCentered(String message, int row);
 bool authenticateBlock(byte blockAddr);
 bool readBlockFromNfc(byte blockAddr, byte buffer[], byte bufferSize);
 bool writeBlockToNfc(byte blockAddr, byte buffer[], byte bufferSize);
-int readUserDataFromNfc(byte dataBuffer[], int bufferCapacity);
-bool writeUserDataToNfc(byte dataBuffer[], int dataLength);
+int readUserDataFromNfc(byte* dataType, uint16_t* dataLength, byte dataBuffer[], int bufferCapacity);
+bool writeUserDataToNfc(byte dataType, byte payloadBuffer[], uint16_t payloadLength);
 bool isUserDataBlock(byte blockAddr); // Helper to check if a block is in our user list
+String getDataTypeName(byte dataType); // Helper to get string name for type code
 
 void setup()
 {
@@ -63,12 +74,14 @@ void setup()
   }
 
   Serial.println(F("-----------------------"));
-  Serial.println(F("MIFARE Classic 1K User Data R/W"));
+  Serial.println(F("MIFARE Classic 1K User Data R/W (with Header)"));
   Serial.print(F("User Blocks: ")); Serial.println(NUM_USER_DATA_BLOCKS);
-  Serial.print(F("Max User Data: ")); Serial.print(MAX_USER_DATA_SIZE); Serial.println(F(" bytes"));
+  Serial.print(F("Total User Area: ")); Serial.print(TOTAL_USER_AREA_SIZE); Serial.println(F(" bytes"));
+  Serial.print(F("Header Size: ")); Serial.print(HEADER_SIZE); Serial.println(F(" bytes"));
+  Serial.print(F("Max Payload: ")); Serial.print(MAX_PAYLOAD_SIZE); Serial.println(F(" bytes"));
   Serial.println(F("Scan card to read/write user data..."));
   setLCDMessageCentered("Ready to Scan", 0);
-  setLCDMessageCentered("User Data Mode", 1);
+  setLCDMessageCentered("User Data+Hdr", 1);
   delay(1000);
 }
 
@@ -76,9 +89,7 @@ void loop()
 {
   // Look for new cards
   if (!mfrc522.PICC_IsNewCardPresent() || !mfrc522.PICC_ReadCardSerial()) {
-    // No card or read failed, clear LCD row 1 and wait
-    // setLCDMessageCentered("", 1); // Optional: clear status line when no card
-    delay(50); // Small delay to prevent busy-waiting
+    delay(50);
     return;
   }
 
@@ -93,77 +104,90 @@ void loop()
   MFRC522::PICC_Type piccType = mfrc522.PICC_GetType(mfrc522.uid.sak);
   Serial.print(F("PICC type: ")); Serial.println(mfrc522.PICC_GetTypeName(piccType));
 
-  // Optional: Check if it's a compatible type
+   // Optional: Check if it's a compatible type
    if (piccType != MFRC522::PICC_TYPE_MIFARE_MINI &&
       piccType != MFRC522::PICC_TYPE_MIFARE_1K &&
       piccType != MFRC522::PICC_TYPE_MIFARE_4K) {
       Serial.println(F("Warning: Card may not be MIFARE Classic compatible."));
-      // Decide if you want to proceed or stop here
   }
 
   // --- Example Operations ---
 
-  // 1. Read Existing User Data
+  // 1. Read Existing User Data (including header info)
   setLCDMessageCentered("Reading Card...", 0);
   setLCDMessageCentered("", 1);
-  byte readBuffer[MAX_USER_DATA_SIZE];
-  int bytesRead = readUserDataFromNfc(readBuffer, MAX_USER_DATA_SIZE);
+  byte readDataType = DATA_TYPE_NONE;
+  uint16_t readDataLength = 0;
+  byte readPayloadBuffer[MAX_PAYLOAD_SIZE]; // Buffer for the actual payload
+
+  int bytesRead = readUserDataFromNfc(&readDataType, &readDataLength, readPayloadBuffer, MAX_PAYLOAD_SIZE);
 
   if (bytesRead >= 0) {
-    Serial.print(F("Successfully read ")); Serial.print(bytesRead); Serial.println(F(" bytes of user data:"));
-    // Print the read data (e.g., first 64 bytes)
-    Serial.print(F("Data (Hex): "));
-    for (int i = 0; i < min(bytesRead, 64); i++) { // Print first 64 bytes or less
-        if (readBuffer[i] < 0x10) Serial.print(" 0"); else Serial.print(" ");
-        Serial.print(readBuffer[i], HEX);
-    }
-    Serial.println();
-     Serial.print(F("Data (ASCII): "));
-    for (int i = 0; i < bytesRead; i++) { // Print all as ASCII
-        if (isprint(readBuffer[i])) {
-            Serial.print((char)readBuffer[i]);
-        } else {
-            Serial.print('.'); // Print dot for non-printable chars
+    Serial.println(F("Read Successful:"));
+    Serial.print(F("  Data Type: 0x")); Serial.print(readDataType, HEX);
+    Serial.print(F(" (")); Serial.print(getDataTypeName(readDataType)); Serial.println(F(")"));
+    Serial.print(F("  Payload Length: ")); Serial.println(readDataLength);
+    Serial.print(F("  Bytes Copied: ")); Serial.println(bytesRead); // Should match readDataLength if buffer was large enough
+
+    if (readDataLength > 0 && bytesRead > 0) {
+        Serial.print(F("  Payload (Hex): "));
+        for (int i = 0; i < min(bytesRead, 64); i++) { // Print first 64 bytes or less
+            if (readPayloadBuffer[i] < 0x10) Serial.print(" 0"); else Serial.print(" ");
+            Serial.print(readPayloadBuffer[i], HEX);
         }
+        Serial.println();
+        Serial.print(F("  Payload (ASCII): "));
+        for (int i = 0; i < bytesRead; i++) { // Print all as ASCII
+            if (isprint(readPayloadBuffer[i])) {
+                Serial.print((char)readPayloadBuffer[i]);
+            } else {
+                Serial.print('.'); // Print dot for non-printable chars
+            }
+        }
+        Serial.println();
+    } else {
+        Serial.println(F("  No payload data present or read."));
     }
-    Serial.println();
-    setLCDMessageCentered("Read Success!", 1);
-    delay(1000); // Show success message
+    setLCDMessageCentered("Read OK", 1);
+    delay(1000);
 
   } else {
-    Serial.println(F("Failed to read user data."));
+    Serial.println(F("Failed to read user data. Error code: ")); Serial.println(bytesRead);
     setLCDMessageCentered("Read Failed!", 1);
-    // Halt card and stop crypto before returning
     mfrc522.PICC_HaltA();
     mfrc522.PCD_StopCrypto1();
     delay(2000);
-    setLCDMessageCentered("Ready to Scan", 0); // Reset LCD for next scan
-    setLCDMessageCentered("User Data Mode", 1);
+    setLCDMessageCentered("Ready to Scan", 0);
+    setLCDMessageCentered("User Data+Hdr", 1);
     return; // Exit loop iteration on read failure
   }
 
 
-  // 2. Prepare and Write New User Data
+  // 2. Prepare and Write New User Data (Password Example)
   setLCDMessageCentered("Writing Data...", 0);
   setLCDMessageCentered("", 1);
-  // Example: Write a string. Remember MAX_USER_DATA_SIZE limit (752 bytes)
-  String userDataString = "Hello from Arduino! Time: " + String(millis());
-  byte dataToWrite[MAX_USER_DATA_SIZE]; // Use a buffer large enough
-  int dataLength = userDataString.length();
 
-  // Clamp data length if it exceeds max size
-  if (dataLength > MAX_USER_DATA_SIZE) {
-      dataLength = MAX_USER_DATA_SIZE;
-      Serial.println("Warning: User data truncated to fit card capacity.");
+  // Example: Generate a simple pseudo-random password string
+  String password = "Pwd_";
+  for (int i = 0; i < 12; i++) { // Generate a 16-char password (Pwd_ + 12 random)
+      char randomChar = random(33, 127); // Printable ASCII chars
+      password += randomChar;
   }
+  // Ensure length doesn't exceed max payload size
+   if (password.length() > MAX_PAYLOAD_SIZE) {
+       password = password.substring(0, MAX_PAYLOAD_SIZE);
+   }
 
-  // Copy string bytes to the buffer
-  memcpy(dataToWrite, userDataString.c_str(), dataLength);
+  byte passwordBytes[MAX_PAYLOAD_SIZE];
+  uint16_t passwordLength = password.length();
+  memcpy(passwordBytes, password.c_str(), passwordLength);
 
-  Serial.print(F("Attempting to write ")); Serial.print(dataLength); Serial.println(F(" bytes of user data..."));
+  Serial.print(F("Attempting to write Password ("));
+  Serial.print(passwordLength); Serial.print(F(" bytes): "));
+  Serial.println(password); // Be careful printing passwords in real applications!
 
-  if (writeUserDataToNfc(dataToWrite, dataLength)) {
-    Serial.println(F("User data write successful (including zero-padding)."));
+  if (writeUserDataToNfc(DATA_TYPE_PASSWORD, passwordBytes, passwordLength)) {
+    Serial.println(F("User data write successful (Header + Payload + Padding)."));
     setLCDMessageCentered("Write Success!", 1);
   } else {
     Serial.println(F("User data write failed."));
@@ -177,159 +201,250 @@ void loop()
   Serial.println(F("Card released. Waiting for next card..."));
   delay(3000); // Pause before next scan attempt
   setLCDMessageCentered("Ready to Scan", 0);
-  setLCDMessageCentered("User Data Mode", 1);
+  setLCDMessageCentered("User Data+Hdr", 1);
 }
 
 // =========================================================================
-// Helper Functions
+// Helper Functions (authenticateBlock, isUserDataBlock, read/writeBlock remain similar)
 // =========================================================================
+/**
+ * @brief Gets a string representation of the data type code.
+ */
+String getDataTypeName(byte dataType) {
+    switch (dataType) {
+        case DATA_TYPE_NONE: return "None/Empty";
+        case DATA_TYPE_PASSWORD: return "Password";
+        // Add cases for other types here
+        default: return "Unknown";
+    }
+}
 
+/**
+ * @brief Checks if a block address is within the defined user data blocks.
+ */
 bool isUserDataBlock(byte blockAddr) {
-    // Check bounds first (although loop in read/write uses the array directly)
     if (blockAddr >= NUM_TOTAL_BLOCKS) return false;
-    // Check block 0 and sector trailers
     if (blockAddr == 0 || (blockAddr + 1) % 4 == 0) return false;
-    // Could also iterate through userDataBlocks array for certainty, but this is faster
     return true;
 }
 
+/**
+ * @brief Authenticates a given block's sector using Key A.
+ */
 bool authenticateBlock(byte blockAddr) {
-  if (blockAddr >= NUM_TOTAL_BLOCKS) return false; // Invalid block
-
+  if (blockAddr >= NUM_TOTAL_BLOCKS) return false;
   byte sector = blockAddr / 4;
   byte trailerBlock = sector * 4 + 3;
-
   MFRC522::StatusCode status = mfrc522.PCD_Authenticate(MFRC522::PICC_CMD_MF_AUTH_KEY_A, trailerBlock, &key, &(mfrc522.uid));
-
   if (status != MFRC522::STATUS_OK) {
-    Serial.print(F("Auth Error (Block ")); Serial.print(blockAddr);
-    Serial.print(F(", Sector ")); Serial.print(sector);
-    Serial.print(F("): ")); Serial.println(mfrc522.GetStatusCodeName(status));
+    Serial.print(F("Auth Error (Block ")); Serial.print(blockAddr); Serial.print(F("): ")); Serial.println(mfrc522.GetStatusCodeName(status));
     return false;
   }
   return true;
 }
 
+/**
+ * @brief Reads a single 16-byte block from the NFC card after authentication.
+ */
 bool readBlockFromNfc(byte blockAddr, byte buffer[], byte bufferSize) {
-  if (bufferSize < 18) {
-      Serial.println(F("Read buffer too small (<18)"));
-      return false;
-  }
-   if (!isUserDataBlock(blockAddr)) { // Safety check
-      Serial.print(F("Read Error: Attempt to read non-user block ")); Serial.println(blockAddr);
-      return false;
-  }
+  if (bufferSize < 18) { Serial.println(F("Read buffer too small (<18)")); return false; }
+  // We allow reading non-user blocks here (like trailers if needed elsewhere),
+  // but the main readUserData function will only call this for user blocks.
+  // Safety check is primarily in the calling function.
 
-  // Authenticate the sector for this block
-  if (!authenticateBlock(blockAddr)) {
-    return false; // Authentication failed
-  }
+  if (!authenticateBlock(blockAddr)) return false;
 
-  // Read the block
-  MFRC522::StatusCode status = mfrc522.MIFARE_Read(blockAddr, buffer, &bufferSize); // bufferSize is updated by the call
-
+  MFRC522::StatusCode status = mfrc522.MIFARE_Read(blockAddr, buffer, &bufferSize);
   if (status != MFRC522::STATUS_OK) {
-    Serial.print(F("Read Error (Block ")); Serial.print(blockAddr);
-    Serial.print(F("): ")); Serial.println(mfrc522.GetStatusCodeName(status));
-    // Don't stop crypto here, let the main operation handler do it
+    Serial.print(F("Read Error (Block ")); Serial.print(blockAddr); Serial.print(F("): ")); Serial.println(mfrc522.GetStatusCodeName(status));
     return false;
   }
-  // Success
   return true;
 }
 
+/**
+ * @brief Writes a single 16-byte block to the NFC card after authentication.
+ */
 bool writeBlockToNfc(byte blockAddr, byte buffer[], byte bufferSize) {
-  if (bufferSize != BLOCK_SIZE) {
-    Serial.print(F("Write Error: Buffer size must be ")); Serial.println(BLOCK_SIZE);
-    return false;
-  }
-  if (!isUserDataBlock(blockAddr)) { // Safety check
-      Serial.print(F("Write Error: Attempt to write non-user block ")); Serial.println(blockAddr);
-      return false;
-  }
+  if (bufferSize != BLOCK_SIZE) { Serial.print(F("Write Error: Buffer size must be ")); Serial.println(BLOCK_SIZE); return false; }
+  if (!isUserDataBlock(blockAddr)) { Serial.print(F("Write Error: Attempt to write non-user block ")); Serial.println(blockAddr); return false; }
 
-  // Authenticate the sector for this block
-  if (!authenticateBlock(blockAddr)) {
-    return false; // Authentication failed
-  }
+  if (!authenticateBlock(blockAddr)) return false;
 
-  // Write the block
   MFRC522::StatusCode status = mfrc522.MIFARE_Write(blockAddr, buffer, BLOCK_SIZE);
-
   if (status != MFRC522::STATUS_OK) {
-    Serial.print(F("Write Error (Block ")); Serial.print(blockAddr);
-    Serial.print(F("): ")); Serial.println(mfrc522.GetStatusCodeName(status));
-    // Don't stop crypto here, let the main operation handler do it
+    Serial.print(F("Write Error (Block ")); Serial.print(blockAddr); Serial.print(F("): ")); Serial.println(mfrc522.GetStatusCodeName(status));
     return false;
   }
-  // Success
   return true;
 }
 
 
 // =========================================================================
-// User Data Area Functions
+// User Data Area Functions (with Header)
 // =========================================================================
 
-int readUserDataFromNfc(byte dataBuffer[], int bufferCapacity) {
-    if (bufferCapacity < MAX_USER_DATA_SIZE) {
-        Serial.println(F("Read User Data Error: Provided buffer too small."));
+/**
+ * @brief Reads the header and payload from the user data area.
+ * Assumes card is present and selected. Handles authentication.
+ * Stops crypto on failure.
+ *
+ * @param dataType Pointer to store the read data type code (output).
+ * @param dataLength Pointer to store the read payload length from the header (output).
+ * @param dataBuffer Buffer to store the actual payload data (output).
+ * @param bufferCapacity The maximum size of dataBuffer.
+ * @return The number of payload bytes successfully read and placed into dataBuffer (can be 0 if length in header is 0),
+ * or -1 if the provided buffer is too small for the payload specified in the header,
+ * or -2 if a read error occurred (e.g., auth failure, invalid header length),
+ * or -3 if the first user block couldn't be read.
+ */
+int readUserDataFromNfc(byte* dataType, uint16_t* dataLength, byte dataBuffer[], int bufferCapacity) {
+    byte firstBlockBuffer[18]; // Buffer for reading the first block (containing header)
+    byte tempBlockBuffer[18];  // Buffer for reading subsequent blocks
+    *dataType = DATA_TYPE_NONE; // Default to none
+    *dataLength = 0;            // Default to zero length
+
+    // 1. Read the first user data block
+    byte firstUserBlockAddr = userDataBlocks[0]; // e.g., Block 1
+    if (!readBlockFromNfc(firstUserBlockAddr, firstBlockBuffer, sizeof(firstBlockBuffer))) {
+        Serial.println(F("Read User Data Error: Failed to read first user block (header block)."));
+        mfrc522.PCD_StopCrypto1();
+        return -3; // Indicate failure to read header block
+    }
+
+    // 2. Parse the header from the first block buffer
+    *dataType = firstBlockBuffer[0];
+    // Combine bytes 1 and 2 into uint16_t (assuming Little Endian for Arduino)
+    *dataLength = (uint16_t)(firstBlockBuffer[2] << 8) | firstBlockBuffer[1];
+
+    // 3. Validate the header data
+    if (*dataLength > MAX_PAYLOAD_SIZE) {
+        Serial.print(F("Read User Data Error: Header length (")); Serial.print(*dataLength);
+        Serial.print(F(") exceeds max payload size (")); Serial.print(MAX_PAYLOAD_SIZE); Serial.println(F(")."));
+        mfrc522.PCD_StopCrypto1();
+        *dataLength = 0; // Reset length as it's invalid
+        *dataType = DATA_TYPE_NONE; // Reset type
+        return -2; // Indicate invalid header data
+    }
+
+    if (*dataLength == 0) {
+        Serial.println(F("Read User Data: Header indicates zero payload length."));
+        // No payload to read, but the read itself was successful.
+        return 0; // Return 0 bytes read
+    }
+
+    if (*dataLength > bufferCapacity) {
+        Serial.print(F("Read User Data Warning: Payload length (")); Serial.print(*dataLength);
+        Serial.print(F(") exceeds provided buffer capacity (")); Serial.print(bufferCapacity); Serial.println(F(")."));
+        // We can potentially still read the header info, but cannot return the payload.
+        // Or we could return a specific error code. Let's return an error.
+        mfrc522.PCD_StopCrypto1();
         return -1; // Indicate buffer too small
     }
 
-    byte tempBlockBuffer[18]; // Buffer for single block read (needs 18 bytes)
+    // 4. Read the actual payload data
     int bytesSuccessfullyRead = 0;
+    int payloadBytesReadFromFirstBlock = 0;
+    int payloadBytesToRead = *dataLength;
 
-    // Iterate through the defined user data blocks
-    for (int i = 0; i < NUM_USER_DATA_BLOCKS; i++) {
-        byte currentBlockAddr = userDataBlocks[i];
-
-        // Read the current user data block
-        if (readBlockFromNfc(currentBlockAddr, tempBlockBuffer, sizeof(tempBlockBuffer))) {
-            // Copy the 16 data bytes from the temp buffer to the main dataBuffer
-            memcpy(dataBuffer + (i * BLOCK_SIZE), tempBlockBuffer, BLOCK_SIZE);
-            bytesSuccessfullyRead += BLOCK_SIZE;
-        } else {
-            // Read failed for this block
-            Serial.print(F("Read User Data Error: Failed reading block ")); Serial.println(currentBlockAddr);
-            mfrc522.PCD_StopCrypto1(); // Stop crypto since we failed mid-operation
-            return -2; // Indicate read failure
-        }
-         delay(10); // Small delay between block reads can improve stability
+    // Copy payload bytes that were already read in the first block (after the header)
+    payloadBytesReadFromFirstBlock = min((int)(BLOCK_SIZE - HEADER_SIZE), payloadBytesToRead);
+    if (payloadBytesReadFromFirstBlock > 0) {
+         memcpy(dataBuffer, firstBlockBuffer + HEADER_SIZE, payloadBytesReadFromFirstBlock);
+         bytesSuccessfullyRead += payloadBytesReadFromFirstBlock;
     }
 
-    // If we reached here, all user blocks were read successfully
-    // Authentication might still be active, caller should handle HaltA and StopCrypto1
-    return bytesSuccessfullyRead; // Should equal MAX_USER_DATA_SIZE
+
+    // Read remaining payload bytes from subsequent user blocks
+    int currentBlockIndex = 1; // Start from the second user data block
+    while (bytesSuccessfullyRead < payloadBytesToRead && currentBlockIndex < NUM_USER_DATA_BLOCKS) {
+        byte currentBlockAddr = userDataBlocks[currentBlockIndex];
+        if (!readBlockFromNfc(currentBlockAddr, tempBlockBuffer, sizeof(tempBlockBuffer))) {
+            Serial.print(F("Read User Data Error: Failed reading payload block ")); Serial.println(currentBlockAddr);
+            mfrc522.PCD_StopCrypto1();
+             *dataLength = 0; // Reset length as read failed
+             *dataType = DATA_TYPE_NONE; // Reset type
+            return -2; // Indicate read failure during payload read
+        }
+
+        int bytesToCopyFromThisBlock = min((int)BLOCK_SIZE, payloadBytesToRead - bytesSuccessfullyRead);
+        memcpy(dataBuffer + bytesSuccessfullyRead, tempBlockBuffer, bytesToCopyFromThisBlock);
+        bytesSuccessfullyRead += bytesToCopyFromThisBlock;
+        currentBlockIndex++;
+         delay(10); // Small delay
+    }
+
+    // Check if we read the expected number of bytes
+    if (bytesSuccessfullyRead != payloadBytesToRead) {
+         Serial.print(F("Read User Data Error: Mismatch between header length (")); Serial.print(payloadBytesToRead);
+         Serial.print(F(") and bytes read (")); Serial.print(bytesSuccessfullyRead); Serial.println(F(")."));
+         mfrc522.PCD_StopCrypto1();
+         *dataLength = 0; // Reset length as read failed
+         *dataType = DATA_TYPE_NONE; // Reset type
+         return -2; // Indicate read failure (length mismatch)
+    }
+
+    // Success!
+    return bytesSuccessfullyRead;
 }
 
-bool writeUserDataToNfc(byte dataBuffer[], int dataLength) {
-    if (dataLength < 0 || dataLength > MAX_USER_DATA_SIZE) {
-        Serial.print(F("Write User Data Error: Invalid data length ("));
-        Serial.print(dataLength); Serial.println(F(")."));
+
+/**
+ * @brief Writes a header and payload to the user data area.
+ * Pads the last payload block and zeros out remaining user blocks.
+ * Assumes card is present and selected. Handles authentication.
+ * Stops crypto on failure.
+ *
+ * @param dataType The data type code to write in the header.
+ * @param payloadBuffer Buffer containing the payload data to write.
+ * @param payloadLength The number of bytes in payloadBuffer to write. Max MAX_PAYLOAD_SIZE.
+ * @return true if all writes (header, payload, padding, zeroing) were successful, false otherwise.
+ */
+bool writeUserDataToNfc(byte dataType, byte payloadBuffer[], uint16_t payloadLength) {
+    if (payloadLength > MAX_PAYLOAD_SIZE) {
+        Serial.print(F("Write User Data Error: Payload length (")); Serial.print(payloadLength);
+        Serial.print(F(") exceeds max size (")); Serial.print(MAX_PAYLOAD_SIZE); Serial.println(F(")."));
         return false;
     }
 
     byte tempBlockBuffer[BLOCK_SIZE];
-    int blocksToWrite = (dataLength + BLOCK_SIZE - 1) / BLOCK_SIZE; // Ceiling division
     bool success = true;
+    int totalBytesToWrite = HEADER_SIZE + payloadLength;
+    // Calculate total user blocks needed (including the one starting with the header)
+    int blocksNeeded = (totalBytesToWrite + BLOCK_SIZE - 1) / BLOCK_SIZE;
 
-    // --- Write the actual user data ---
-    for (int i = 0; i < blocksToWrite; i++) {
+    int payloadBytesWritten = 0;
+
+    // --- Write blocks containing header and payload data ---
+    for (int i = 0; i < blocksNeeded; i++) {
         byte currentBlockAddr = userDataBlocks[i];
-        int currentDataOffset = i * BLOCK_SIZE;
-        int bytesToCopy = BLOCK_SIZE;
+        memset(tempBlockBuffer, 0, BLOCK_SIZE); // Start with a zeroed buffer for padding
 
-        // For the last block, only copy remaining bytes and pad with zero
-        if (i == blocksToWrite - 1) {
-            bytesToCopy = dataLength - currentDataOffset;
-            // Copy the remaining data
-            memcpy(tempBlockBuffer, dataBuffer + currentDataOffset, bytesToCopy);
-            // Pad the rest of the block buffer with zeros
-            memset(tempBlockBuffer + bytesToCopy, 0, BLOCK_SIZE - bytesToCopy);
-        } else {
-            // Copy a full block of data
-            memcpy(tempBlockBuffer, dataBuffer + currentDataOffset, BLOCK_SIZE);
+        int bytesToCopyInThisBlock = 0;
+
+        // Handle the first block (header + start of payload)
+        if (i == 0) {
+            // Write header
+            tempBlockBuffer[0] = dataType;
+            tempBlockBuffer[1] = (byte)(payloadLength & 0xFF);         // Low byte of length
+            tempBlockBuffer[2] = (byte)((payloadLength >> 8) & 0xFF); // High byte of length
+
+            // Copy first part of payload into the rest of the first block
+            bytesToCopyInThisBlock = min((int)(BLOCK_SIZE - HEADER_SIZE), (int)payloadLength);
+            if (bytesToCopyInThisBlock > 0) {
+                 memcpy(tempBlockBuffer + HEADER_SIZE, payloadBuffer, bytesToCopyInThisBlock);
+                 payloadBytesWritten += bytesToCopyInThisBlock;
+            }
+        }
+        // Handle subsequent payload blocks
+        else {
+            int remainingPayload = payloadLength - payloadBytesWritten;
+            bytesToCopyInThisBlock = min((int)BLOCK_SIZE, remainingPayload);
+             if (bytesToCopyInThisBlock > 0) {
+                memcpy(tempBlockBuffer, payloadBuffer + payloadBytesWritten, bytesToCopyInThisBlock);
+                payloadBytesWritten += bytesToCopyInThisBlock;
+             }
+             // The rest of tempBlockBuffer is already zeroed (padding)
         }
 
         // Write the prepared block buffer to the card
@@ -338,22 +453,23 @@ bool writeUserDataToNfc(byte dataBuffer[], int dataLength) {
             success = false;
             break; // Stop writing if an error occurs
         }
-         delay(20); // Slightly longer delay for writes might help
+         delay(20); // Write delay
     }
 
     // --- Zero out remaining user data blocks (if write was successful so far) ---
     if (success) {
-        Serial.print(F("Data write phase complete. Zeroing remaining "));
-        Serial.print(NUM_USER_DATA_BLOCKS - blocksToWrite);
+        Serial.print(F("Payload write phase complete. Zeroing remaining "));
+        Serial.print(NUM_USER_DATA_BLOCKS - blocksNeeded);
         Serial.println(F(" user blocks..."));
-        for (int i = blocksToWrite; i < NUM_USER_DATA_BLOCKS; i++) {
+        for (int i = blocksNeeded; i < NUM_USER_DATA_BLOCKS; i++) {
              byte currentBlockAddr = userDataBlocks[i];
+             // Use the global zeroBuffer for efficiency
              if (!writeBlockToNfc(currentBlockAddr, zeroBuffer, BLOCK_SIZE)) {
                  Serial.print(F("Write User Data Error: Failed zeroing block ")); Serial.println(currentBlockAddr);
                  success = false;
                  break; // Stop zeroing if an error occurs
              }
-              delay(20);
+              delay(20); // Write delay
         }
     }
 
@@ -368,35 +484,17 @@ bool writeUserDataToNfc(byte dataBuffer[], int dataLength) {
 
 
 // Implementation of setLCDMessageCentered (remains the same)
-void setLCDMessageCentered(String message, int row)
-{
-  if (row < 0 || row >= lcdRows) { return; } // Basic bounds check
-  int messageLen = message.length();
-  String messageToDisplay = message;
-
-  // Truncate if message is too long
-  if (messageLen > lcdColumns) {
-    messageToDisplay = messageToDisplay.substring(0, lcdColumns);
-    messageLen = lcdColumns;
-  }
-
-  // Calculate padding
-  int totalEmptySpace = lcdColumns - messageLen;
-  int leftPadding = totalEmptySpace / 2; // Integer division handles centering
-
-  // Build the output string with padding
-  String outputString = "";
-  for (int i = 0; i < leftPadding; i++) {
-    outputString += " ";
-  }
-  outputString += messageToDisplay;
-
-  // Pad remaining space on the right (optional, but ensures clearing old text)
-  while (outputString.length() < lcdColumns) {
-    outputString += " ";
-  }
-
-  // Set cursor and print
-  lcd.setCursor(0, row);
-  lcd.print(outputString);
+void setLCDMessageCentered(String message, int row) {
+    if (row < 0 || row >= lcdRows) { return; }
+    int messageLen = message.length();
+    String messageToDisplay = message;
+    if (messageLen > lcdColumns) { messageToDisplay = messageToDisplay.substring(0, lcdColumns); messageLen = lcdColumns; }
+    int totalEmptySpace = lcdColumns - messageLen;
+    int leftPadding = totalEmptySpace / 2;
+    String outputString = "";
+    for (int i = 0; i < leftPadding; i++) { outputString += " "; }
+    outputString += messageToDisplay;
+    while (outputString.length() < lcdColumns) { outputString += " "; }
+    lcd.setCursor(0, row);
+    lcd.print(outputString);
 }
