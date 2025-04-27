@@ -1,5 +1,5 @@
 import serial
-from pynput.keyboard import Controller
+from pynput.keyboard import Key, Controller
 
 MACOS = "/dev/cu.usbmodem2101"
 baudrate = 115200
@@ -11,4 +11,6 @@ while True:
     data = ser.readline().decode('utf-8').strip()
     if "[TYPE]" in data:
         keyboard.type(data[6:])
+        keyboard.press(Key.enter)
+        keyboard.release(Key.enter)
 
