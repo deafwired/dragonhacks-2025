@@ -104,9 +104,7 @@ String generatePassword(int length);
 bool isUserDataBlock(byte blockAddr);
 String getDataTypeName(byte dataType);
 
-// =========================================================================
 // Setup
-// =========================================================================
 void setup() {
     Serial.begin(115200);
     while (!Serial);
@@ -188,7 +186,7 @@ void loop() {
             // Copy plaintext password to buffer (including null terminator for encryption padding)
             memcpy(tempPayloadBuffer, pwd.c_str(), tempPayloadLength + 1);
             tempDataType = DATA_TYPE_PASSWORD_ENC; // <<< Default to encrypted type
-            Serial.print("Generated Pwd: "); Serial.println(pwd);
+            Serial.print("[TYPE] "); Serial.println(pwd);
             currentMenuState = STATE_WRITING_CARD;
             displayStatus(currentStatusMsg, "Encrypt/Write..."); // Update status message
             delay(500);
@@ -197,6 +195,9 @@ void loop() {
             // Pass the PLAINTEXT password and length; encryption happens inside writeUserDataToNfc
             if (writeUserDataToNfc(tempDataType, tempPayloadBuffer, tempPayloadLength)) {
                 Serial.println("Write successful."); currentStatusMsg = "Success!"; displayStatus(currentStatusMsg, "Password Saved.");
+                delay(3000);
+                currentMenuState = STATE_MAIN_MENU; displayMainMenu(); // Return to main menu after success
+                
             } else {
                 Serial.println("Write failed."); currentStatusMsg = "Write Failed"; displayStatus(currentStatusMsg, "Check Card/Key");
             }
@@ -248,16 +249,19 @@ void displayPasswordScreen() {
          if (isprint(tempPayloadBuffer[i])) { pwdStr += (char)tempPayloadBuffer[i]; }
          else { pwdStr += '?'; }
     }
-    setLCDMessage(pwdStr.substring(0, 16), 1, false);
-    Serial.print("[TYPE] "); Serial.print(currentStatusMsg);
-    Serial.print(" [PWD] "); Serial.println(pwdStr); // Log the displayed password
+    //setLCDMessage(pwdStr.substring(0, 16), 1, false);
+    setLCDMessage("Sent to Computer", 1, false); // Display a message indicating password is sent to Serial
+    Serial.print("[TYPE] "); Serial.println(pwdStr);
+    delay(3000);
+    currentMenuState = STATE_MAIN_MENU; displayMainMenu(); // Return to main menu after success
+
 }
 
 // =========================================================================
 // NFC Card Interaction Functions (Unchanged)
 // =========================================================================
 bool initializeCardInteraction() { if (!mfrc522.PICC_IsNewCardPresent()) return false; if (!mfrc522.PICC_ReadCardSerial()) { Serial.println("Failed to read card serial."); return false; } Serial.print(F("Card Found! UID:")); for (byte i = 0; i < mfrc522.uid.size; i++) { Serial.print(mfrc522.uid.uidByte[i] < 0x10 ? " 0" : " "); Serial.print(mfrc522.uid.uidByte[i], HEX); } Serial.println(); MFRC522::PICC_Type piccType = mfrc522.PICC_GetType(mfrc522.uid.sak); Serial.print(F("PICC type: ")); Serial.println(mfrc522.PICC_GetTypeName(piccType)); if (piccType != MFRC522::PICC_TYPE_MIFARE_MINI && piccType != MFRC522::PICC_TYPE_MIFARE_1K && piccType != MFRC522::PICC_TYPE_MIFARE_4K) { Serial.println(F("Warning: Card type not MIFARE Classic.")); } return true; }
-void finalizeCardInteraction() { mfrc522.PICC_HaltA(); mfrc522.PCD_StopCrypto1(); Serial.println(F("Card Released.")); }
+void finalizeCardInteraction() { mfrc522.PICC_HaltA(); mfrc522.PCD_StopCrypto1(); Serial.println(F("")); }
 
 // =========================================================================
 // NFC Low-Level Read/Write & Helpers (Unchanged)
